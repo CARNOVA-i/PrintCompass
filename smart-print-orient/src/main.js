@@ -25,26 +25,50 @@ let currentViewQuat = new THREE.Quaternion(); // tracks what is displayed
 
 let lastFocusEl = null;
 
+let viewMode = "strength"; // "strength" | "supports"
+
+
 function openHelp() {
   lastFocusEl = document.activeElement;
-  helpModal.classList.add("open");
+
+  helpModal.removeAttribute("hidden");
+  helpModal.classList.add("open");    // pick one system
+  helpModal.classList.remove("show"); // optional cleanup
   helpModal.setAttribute("aria-hidden", "false");
-  helpOk?.focus();
+
+  helpClose?.focus(); // or helpOk?.focus()
 }
 
+
 function closeHelp() {
+  // Pick a safe focus target outside the modal
+  const fallback = document.getElementById("helpBtn");
+
+  // If current focus is inside the modal, move it out first
+  if (helpModal && helpModal.contains(document.activeElement)) {
+    (lastFocusEl && !helpModal.contains(lastFocusEl) ? lastFocusEl : fallback)?.focus();
+  } else {
+    lastFocusEl?.focus();
+  }
+
+  // Now hide
   helpModal.classList.remove("open");
-
-  // move focus OUT before aria-hidden
-  lastFocusEl?.focus();
-
+  helpModal.classList.remove("show"); // in case you still have the other system
   helpModal.setAttribute("aria-hidden", "true");
+  helpModal.setAttribute("hidden", "");
 
   if (dontShowAgain?.checked) {
     localStorage.setItem("spoa_hide_help", "1");
   }
 }
 
+
+
+// Cura/export space is Z-up. Viewer space is Y-up.
+// This converts a Z-up orientation into your Y-up viewer.
+const qZupToYup = new THREE.Quaternion().setFromEuler(
+  new THREE.Euler(-Math.PI / 2, 0, 0) // rotate -90° about X
+);
 
 
 
@@ -135,6 +159,11 @@ function renderInspectorHUD(rep) {
 }
 
 
+const toggleViewBtn = document.getElementById("toggleViewBtn");
+
+toggleViewBtn?.addEventListener("click", () => {
+  console.log("toggleViewBtn clicked");
+});
 
 
 
@@ -142,15 +171,38 @@ function renderInspectorHUD(rep) {
 
 function applyViewQuaternion(q) {
   if (!viewMesh) return;
-  currentViewQuat.copy(q);
+
+  // Convert from Z-up (solver/export) to Y-up (viewer)
+  currentViewQuat.copy(q).premultiply(qZupToYup);
+
+  // Reset transforms
+  viewMesh.position.set(0, 0, 0);
   viewMesh.rotation.set(0, 0, 0);
+
+  // Apply rotation
   viewMesh.setRotationFromQuaternion(currentViewQuat);
   viewMesh.updateMatrixWorld(true);
 
+  // Ground to build plate (Y up)
+  const box = new THREE.Box3().setFromObject(viewMesh);
+  viewMesh.position.y -= box.min.y;
+
+  // Recenter on plate (XZ)
+  viewMesh.updateMatrixWorld(true);
+  const box2 = new THREE.Box3().setFromObject(viewMesh);
+  const center = box2.getCenter(new THREE.Vector3());
+  viewMesh.position.x -= center.x;
+  viewMesh.position.z -= center.z;
+
+  viewMesh.updateMatrixWorld(true);
+
+  // Load arrow
   const loadAxis = getLoadAxisFromUI(lastAnalysisData);
   const loadWorld = loadAxis.clone().applyQuaternion(currentViewQuat).normalize();
   updateLoadArrow(loadWorld, viewMesh);
 }
+
+
 
 
 
@@ -255,9 +307,7 @@ function exportSTL() {
 
   if (!currentMesh) return;
 
-  if (mode === "shown") {
-    exportAsShownSTL();
-  } else if (mode === "strength") {
+  if (mode === "strength") {
     exportBakedQuaternion(bestQuatStrength, "strength");
   } else if (mode === "supports") {
     exportBakedQuaternion(bestQuatSupports, "supports");
@@ -266,11 +316,53 @@ function exportSTL() {
 
 
 
+document.getElementById("toggleViewBtn")?.addEventListener("click", () => {
+  if (!viewMesh) return;
+
+  viewMode = viewMode === "strength" ? "supports" : "strength";
+
+  const btn = document.getElementById("toggleViewBtn");
+  if (btn) btn.textContent = `View: ${viewMode === "strength" ? "Strength" : "Supports"}`;
+
+  applyViewQuaternion(viewMode === "strength" ? bestQuatStrength : bestQuatSupports);
+});
+
 
 
 
 // ---------------------------------------- EXPORT BUTTON ------------------------------
 document.getElementById("exportBtn").onclick = exportSTL;
+
+
+
+
+// ---------------------------------------- CLEAR BUILDPLATE BUTTON --------------------
+document.getElementById("clearBuildplateBtn")?.addEventListener(
+  "click",
+  clearBuildplate
+);
+
+
+
+
+document.getElementById("helpBtn")?.addEventListener("click", () => {
+  console.log("Help button clicked");
+
+  const modal = document.getElementById("helpModal");
+  if (!modal) {
+    console.warn("helpModal not found");
+    return;
+  }
+
+  modal.classList.add("show");
+  modal.removeAttribute("hidden");
+  modal.setAttribute("aria-hidden", "false");
+});
+
+
+
+document.getElementById("helpOk")?.addEventListener("click", closeHelp);
+document.getElementById("helpClose")?.addEventListener("click", closeHelp);
 
 
 
@@ -397,11 +489,11 @@ function loadSTL(buffer) {
   const analysisData = preprocessGeometry(baseGeometry);
   lastAnalysisData = analysisData;
 
-  // ✅ Inspector must run AFTER analysisData exists
+  // Inspector must run AFTER analysisData exists
   const inspector = computeInspectorReport(analysisData);
   window.lastInspectorReport = inspector;
   console.log("Inspector:", inspector);
-  renderInspectorHUD(inspector); // optional, only works if you added the HUD HTML
+  renderInspectorHUD(inspector);
 
   console.log("Triangle count:", analysisData.triangles.length);
   console.log("Total surface area:", analysisData.totalArea.toFixed(2));
@@ -434,6 +526,10 @@ function loadSTL(buffer) {
 
   console.log("Best supports/overhang scores (lower is better):");
   console.table(supportsScores.slice(0, 5));
+  console.log("bestQuatStrength", bestQuatStrength.toArray());
+  console.log("bestQuatSupports", bestQuatSupports.toArray());
+  console.log("dot similarity", Math.abs(bestQuatStrength.dot(bestQuatSupports)));
+
 
   // Build or replace the view mesh (from pristine base)
   if (viewMesh) {
@@ -452,8 +548,25 @@ function loadSTL(buffer) {
   viewMesh = new THREE.Mesh(baseGeometry.clone(), material);
   scene.add(viewMesh);
 
-  // Default view
-  applyViewQuaternion(bestQuatStrength);
+  // Export uses currentMesh, so keep it aligned with what we're seeing
+  currentMesh = viewMesh;
+
+  console.log("Model loaded and added to scene.", {
+    triangles: analysisData?.triangles?.length,
+    watertight: window.lastInspectorReport?.edgeStats?.watertight,
+  });
+
+  // ---- Default view mode on load ----
+  // Always start in Strength view unless you explicitly change it elsewhere.
+  viewMode = "strength";
+const btn = document.getElementById("toggleViewBtn");
+if (btn) btn.textContent = "View: Strength";
+
+
+
+  // Apply view based on viewMode
+  const defaultQuat = viewMode === "supports" ? bestQuatSupports : bestQuatStrength;
+  applyViewQuaternion(defaultQuat);
 
   // Auto-frame camera
   const box = new THREE.Box3().setFromObject(viewMesh);
@@ -465,6 +578,40 @@ function loadSTL(buffer) {
   camera.lookAt(center);
 }
 
+
+function clearBuildplate() {
+  // Remove visible mesh
+  if (viewMesh) {
+    scene.remove(viewMesh);
+    viewMesh.geometry.dispose();
+    viewMesh.material.dispose();
+    viewMesh = null;
+  }
+
+  // Clear analysis + state
+  lastSTLBuffer = null;
+  lastAnalysisData = null;
+  baseGeometry = null;
+  bestQuatStrength = null;
+  bestQuatSupports = null;
+
+  // Clear inspector HUD
+  const hud = document.getElementById("inspectorHud");
+  if (hud) hud.hidden = true;
+
+  // Clear load arrow
+  if (loadArrow) {
+    scene.remove(loadArrow);
+    loadArrow = null;
+  }
+
+  // Reset camera to neutral
+  controls.target.set(0, 0, 0);
+  camera.position.set(0, 60, 120);
+  camera.lookAt(0, 0, 0);
+
+  console.log("Buildplate cleared");
+}
 
 
 
@@ -483,9 +630,12 @@ window.addEventListener("resize", () => {
   renderer.setSize(window.innerWidth, window.innerHeight);
 });
 
-document.getElementById("reanalyzeBtn").onclick = () => {
-  if (lastSTLBuffer) {
-    loadSTL(lastSTLBuffer);
-  }
-};
+document.getElementById("reAnalyzeBtn")?.addEventListener("click", () => {
+  if (lastSTLBuffer) loadSTL(lastSTLBuffer);
+});
 
+const fileNameEl = document.getElementById("fileName");
+document.getElementById("fileInput")?.addEventListener("change", (e) => {
+  const f = e.target.files?.[0];
+  if (fileNameEl) fileNameEl.textContent = f ? f.name : "No file";
+});
