@@ -72,6 +72,69 @@ const qZupToYup = new THREE.Quaternion().setFromEuler(
 
 
 
+function getViewerQuaternion(zUpQuat) {
+  return qZupToYup.clone().multiply(zUpQuat);
+}
+
+function getCurrentAnalysisQuaternion() {
+  return viewMode === "supports" ? bestQuatSupports : bestQuatStrength;
+}
+
+function getLoadAxisSelectorValue() {
+  const el =
+    document.getElementById("loadDir") ||
+    document.getElementById("loadAxis") ||
+    document.querySelector("[name='loadDir']") ||
+    document.querySelector("[name='loadAxis']");
+
+  return el?.value ?? "principal";
+}
+
+function normalizeAxisSelection(value) {
+  switch ((value ?? "").trim().toLowerCase()) {
+    case "x":
+    case "+x":
+      return "+x";
+    case "-x":
+      return "-x";
+    case "y":
+    case "+y":
+      return "+y";
+    case "-y":
+      return "-y";
+    case "z":
+    case "+z":
+      return "+z";
+    case "-z":
+      return "-z";
+    case "principalaxis":
+    case "principal-axis":
+    case "auto":
+    case "principal":
+    default:
+      return "principal";
+  }
+}
+
+function getExportMode() {
+  const raw = document.getElementById("exportMode")?.value ?? viewMode;
+
+  switch ((raw ?? "").trim().toLowerCase()) {
+    case "strength":
+      return "strength";
+    case "support":
+    case "supports":
+    case "overhang":
+      return "supports";
+    case "shown":
+    case "current":
+    case "view":
+      return viewMode;
+    default:
+      return viewMode;
+  }
+}
+
 function renderInspectorHUD(rep) {
   const hud = document.getElementById("inspectorHud");
   const pills = document.getElementById("inspectorPills");
@@ -173,7 +236,7 @@ function applyViewQuaternion(q) {
   if (!viewMesh) return;
 
   // Convert from Z-up (solver/export) to Y-up (viewer)
-  currentViewQuat.copy(q).premultiply(qZupToYup);
+  currentViewQuat.copy(getViewerQuaternion(q));
 
   // Reset transforms
   viewMesh.position.set(0, 0, 0);
@@ -303,7 +366,7 @@ function exportBakedQuaternion(quat, label) {
 
 
 function exportSTL() {
-  const mode = document.getElementById("exportMode").value;
+  const mode = getExportMode();
 
   if (!currentMesh) return;
 
@@ -399,7 +462,7 @@ function updateLoadArrow(directionWorld, mesh) {
 
 
 function getLoadAxisFromUI(analysisData) {
-  const sel = document.getElementById("loadDir")?.value || "principal";
+  const sel = normalizeAxisSelection(getLoadAxisSelectorValue());
 
   switch (sel) {
     case "+x": return new THREE.Vector3(1, 0, 0);
@@ -565,7 +628,7 @@ if (btn) btn.textContent = "View: Strength";
 
 
   // Apply view based on viewMode
-  const defaultQuat = viewMode === "supports" ? bestQuatSupports : bestQuatStrength;
+  const defaultQuat = getCurrentAnalysisQuaternion();
   applyViewQuaternion(defaultQuat);
 
   // Auto-frame camera
