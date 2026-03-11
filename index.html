@@ -448,6 +448,7 @@
     <div class="divider"></div>
 
     <div class="group">
+      <button id="analyzeOrientationBtn" class="btn">Analyze Orientation</button>
       <button id="reAnalyzeBtn" class="btn">Re-analyze</button>
 
       <button id="exportBtn" class="btn primary">Export STL</button>
@@ -483,6 +484,20 @@
 
       <button id="helpBtn" class="btn icon" title="What am I seeing?">?</button>
     </div>
+  </div>
+</div>
+
+<div id="orientationPanel" class="orientationPanel" hidden>
+  <div class="orientationPanelHead">
+    <div>
+      <div class="orientationPanelKicker">Analyze Orientation</div>
+      <div class="orientationPanelTitle">First-pass recommendations</div>
+    </div>
+    <div id="orientationMeta" class="orientationMeta">Load an STL to begin.</div>
+  </div>
+
+  <div id="orientationResults" class="orientationResults">
+    <div class="orientationEmpty">No recommendations yet.</div>
   </div>
 </div>
 

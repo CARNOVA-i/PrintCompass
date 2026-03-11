@@ -8,6 +8,7 @@ import { scoreOverhang } from "./analyze/scoreOverhang.js";
 import { scoreStrength } from "./analyze/scoreStrength.js";
 import { STLExporter } from "three/examples/jsm/exporters/STLExporter.js";
 import { computeInspectorReport } from "./analyze/inspector.js";
+import { analyzeOrientationRecommendations } from "./analyze/orientationRecommendations.js";
 
 
 
@@ -29,6 +30,7 @@ let viewMode = "strength"; // "strength" | "supports"
 let rankedCandidatesStrength = [];
 let rankedCandidatesSupports = [];
 let currentCandidateIndex = 0;
+let orientationRecommendations = [];
 
 
 function openHelp() {
@@ -292,6 +294,73 @@ function renderInspectorHUD(rep) {
   pre.textContent = JSON.stringify(rep, null, 2);
 }
 
+function formatPercent(value, invert = false) {
+  const pct = Math.round((invert ? 1 - value : value) * 100);
+  return `${Math.max(0, Math.min(100, pct))}%`;
+}
+
+function resetOrientationPanel(message = "No recommendations yet.") {
+  orientationRecommendations = [];
+
+  const panel = document.getElementById("orientationPanel");
+  const results = document.getElementById("orientationResults");
+  const meta = document.getElementById("orientationMeta");
+
+  if (panel) panel.hidden = false;
+  if (meta) meta.textContent = message;
+  if (results) {
+    results.innerHTML = `<div class="orientationEmpty">${message}</div>`;
+  }
+}
+
+function renderOrientationRecommendations(result) {
+  orientationRecommendations = result.recommendations;
+
+  const panel = document.getElementById("orientationPanel");
+  const results = document.getElementById("orientationResults");
+  const meta = document.getElementById("orientationMeta");
+
+  if (!panel || !results || !meta) return;
+
+  panel.hidden = false;
+  meta.textContent = `${result.candidateCount} candidates sampled at ${result.stepDegrees}° steps`;
+
+  results.innerHTML = "";
+
+  for (const recommendation of result.recommendations) {
+    const card = document.createElement("div");
+    card.className = "orientationCard";
+    card.innerHTML = `
+      <div class="orientationCardHead">
+        <div class="orientationLabel">${recommendation.label}</div>
+        <div class="orientationAngles">X ${recommendation.xDeg}° / Y ${recommendation.yDeg}°</div>
+      </div>
+      <div class="orientationMetrics">
+        <span>Support ${formatPercent(recommendation.normalized.supportNeed, true)}</span>
+        <span>Stability ${formatPercent(recommendation.metrics.bedStability)}</span>
+        <span>Height ${recommendation.metrics.printHeight.toFixed(1)}</span>
+      </div>
+      <button class="btn orientationApply" type="button">Apply</button>
+    `;
+
+    card.querySelector(".orientationApply")?.addEventListener("click", () => {
+      applyViewQuaternion(recommendation.quaternion);
+    });
+
+    results.appendChild(card);
+  }
+}
+
+function runOrientationAnalysis() {
+  if (!lastAnalysisData) {
+    resetOrientationPanel("Load an STL to analyze orientation.");
+    return;
+  }
+
+  const result = analyzeOrientationRecommendations(lastAnalysisData, { stepDegrees: 45 });
+  renderOrientationRecommendations(result);
+}
+
 
 const toggleViewBtn = document.getElementById("toggleViewBtn");
 
@@ -527,6 +596,7 @@ document.getElementById("toggleViewBtn")?.addEventListener("click", () => {
 
 ensureManualRotateUI();
 updateCandidateUI();
+resetOrientationPanel("Load an STL to analyze orientation.");
 
 document.getElementById("rotXPlus").onclick = () => rotateView([1, 0, 0],  getRotateStepRadians());
 document.getElementById("rotXMinus").onclick = () => rotateView([1, 0, 0], -getRotateStepRadians());
@@ -549,6 +619,8 @@ document.getElementById("candidatePrevBtn")?.addEventListener("click", () => {
 document.getElementById("candidateNextBtn")?.addEventListener("click", () => {
   showCandidate(currentCandidateIndex + 1);
 });
+
+document.getElementById("analyzeOrientationBtn")?.addEventListener("click", runOrientationAnalysis);
 
 
 // ---------------------------------------- EXPORT BUTTON ------------------------------
@@ -788,6 +860,7 @@ if (btn) btn.textContent = "View: Strength";
 
   // Apply view based on viewMode
   showCandidate(0);
+  resetOrientationPanel("Click Analyze Orientation to generate recommendations.");
 
   // Auto-frame camera
   const box = new THREE.Box3().setFromObject(viewMesh);
@@ -820,6 +893,7 @@ function clearBuildplate() {
   rankedCandidatesSupports = [];
   currentCandidateIndex = 0;
   updateCandidateUI();
+  resetOrientationPanel("Load an STL to analyze orientation.");
 
   // Clear inspector HUD
   const hud = document.getElementById("inspectorHud");
