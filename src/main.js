@@ -563,22 +563,12 @@ function exportBakedQuaternion(quat, label) {
 
 
 function exportSTL() {
-  const mode = getExportMode();
-
   if (!currentMesh) return;
 
-  if (mode === "view") {
-    const exportQuat = getCurrentViewExportQuaternion();
-    if (exportQuat) exportBakedQuaternion(exportQuat, "view");
-    return;
-  }
+  const exportQuat = getCurrentViewExportQuaternion();
+  if (!exportQuat) return;
 
-  if (mode === "strength") {
-    exportBakedQuaternion(bestQuatStrength, "strength");
-  } 
-  else if (mode === "supports") {
-    exportBakedQuaternion(bestQuatSupports, "supports");
-  }
+  exportBakedQuaternion(exportQuat, "view");
 }
 
 
