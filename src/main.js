@@ -34,6 +34,10 @@ let orientationRecommendations = [];
 
 
 function openHelp() {
+  const helpModal = document.getElementById("helpModal");
+  const helpClose = document.getElementById("helpClose");
+  if (!helpModal) return;
+
   lastFocusEl = document.activeElement;
 
   helpModal.removeAttribute("hidden");
@@ -46,8 +50,11 @@ function openHelp() {
 
 
 function closeHelp() {
+  const helpModal = document.getElementById("helpModal");
   // Pick a safe focus target outside the modal
   const fallback = document.getElementById("helpBtn");
+  const dontShowAgain = document.getElementById("dontShowAgain");
+  if (!helpModal) return;
 
   // If current focus is inside the modal, move it out first
   if (helpModal && helpModal.contains(document.activeElement)) {
@@ -65,6 +72,36 @@ function closeHelp() {
   if (dontShowAgain?.checked) {
     localStorage.setItem("spoa_hide_help", "1");
   }
+}
+
+function wireHelpModal() {
+  document.getElementById("helpBtn")?.addEventListener("click", openHelp);
+  document.getElementById("helpOk")?.addEventListener("click", closeHelp);
+  document.getElementById("helpClose")?.addEventListener("click", closeHelp);
+  document.querySelector("#helpModal .modal-backdrop")?.addEventListener("click", closeHelp);
+
+  window.addEventListener("keydown", (event) => {
+    const helpModal = document.getElementById("helpModal");
+    if (event.key === "Escape" && helpModal?.classList.contains("open")) {
+      closeHelp();
+    }
+  });
+}
+
+function enforceCtrlWheelZoom(domElement, orbitControls) {
+  orbitControls.enableZoom = false;
+
+  domElement.addEventListener(
+    "wheel",
+    (event) => {
+      orbitControls.enableZoom = event.ctrlKey;
+
+      if (!event.ctrlKey) return;
+
+      event.preventDefault();
+    },
+    { passive: false, capture: true }
+  );
 }
 
 
@@ -628,24 +665,7 @@ document.getElementById("clearBuildplateBtn")?.addEventListener(
 
 
 
-document.getElementById("helpBtn")?.addEventListener("click", () => {
-  console.log("Help button clicked");
-
-  const modal = document.getElementById("helpModal");
-  if (!modal) {
-    console.warn("helpModal not found");
-    return;
-  }
-
-  modal.classList.add("show");
-  modal.removeAttribute("hidden");
-  modal.setAttribute("aria-hidden", "false");
-});
-
-
-
-document.getElementById("helpOk")?.addEventListener("click", closeHelp);
-document.getElementById("helpClose")?.addEventListener("click", closeHelp);
+wireHelpModal();
 
 
 
@@ -723,6 +743,7 @@ document.body.appendChild(renderer.domElement);
 // ---------- CONTROLS ----------
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
+enforceCtrlWheelZoom(renderer.domElement, controls);
 
 // ---------- LIGHTING ----------
 scene.add(new THREE.AmbientLight(0xffffff, 0.35));

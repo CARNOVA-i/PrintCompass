@@ -27,7 +27,7 @@ body {
   background: #0b1020;
   color: #e6f0ff;
   font-family: system-ui, sans-serif;
-  overflow: hidden;
+  overflow: auto;
 }
 
 

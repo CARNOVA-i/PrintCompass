@@ -11,7 +11,7 @@
         background: #0b1020;
         color: #e6f0ff;
         font-family: system-ui, sans-serif;
-        overflow: hidden;
+        overflow: auto;
       }
 
       :root{
@@ -510,7 +510,7 @@
     <div class="modal-header">
       <div>
         <div class="modal-kicker">Smart Print Orientation Analyzer</div>
-        <h2 id="helpTitle" class="modal-title">What am I seeing?</h2>
+        <h2 id="helpTitle" class="modal-title">Controls</h2>
       </div>
 
       <button id="helpClose" type="button" class="icon-btn" aria-label="Close help">
@@ -520,38 +520,34 @@
 
     <div class="modal-body">
       <p class="p">
-        This tool analyzes your 3D model and recommends a print orientation based on real mechanical tradeoffs.
+        Viewer and workflow shortcuts for the current tool.
       </p>
 
       <div class="callouts">
         <div class="callout">
-          <div class="callout-title">Grid</div>
-          <div class="callout-text">Represents the print bed.</div>
+          <div class="callout-title">Left drag</div>
+          <div class="callout-text">Orbit the camera around the current model.</div>
         </div>
 
         <div class="callout">
-          <div class="callout-title">Model rotation</div>
-          <div class="callout-text">
-            The model snaps to the best-scoring orientation for the selected goal.
-          </div>
+          <div class="callout-title">Ctrl + wheel</div>
+          <div class="callout-text">Zoom the 3D viewer. Plain wheel scrolling will not zoom.</div>
         </div>
 
         <div class="callout">
-          <div class="callout-title">Red arrow</div>
-          <div class="callout-text">
-            Shows the chosen load direction after the model has been rotated.
-          </div>
+          <div class="callout-title">Right drag</div>
+          <div class="callout-text">Pan the camera view across the build plate.</div>
         </div>
       </div>
 
       <div class="divider"></div>
 
       <div class="tips">
-        <div class="tips-title">Try this</div>
+        <div class="tips-title">Workflow</div>
         <ol class="ol">
-          <li>Change the <b>Load</b> selector</li>
-          <li>Click <b>Re-analyze</b></li>
-          <li>Watch the model and arrow update together</li>
+          <li><b>Analyze Orientation</b> generates recommendation cards.</li>
+          <li><b>Apply</b> rotates the model to the selected candidate.</li>
+          <li><b>Export STL</b> exports the current visible orientation.</li>
         </ol>
       </div>
     </div>
