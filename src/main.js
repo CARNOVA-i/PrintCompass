@@ -9,6 +9,7 @@ import { scoreStrength } from "./analyze/scoreStrength.js";
 import { STLExporter } from "three/examples/jsm/exporters/STLExporter.js";
 import { computeInspectorReport } from "./analyze/inspector.js";
 import { analyzeOrientationRecommendations } from "./analyze/orientationRecommendations.js";
+import { buildOverhangVertexColors, buildSupportShadowSegments } from "./analyze/overhangHeatmap.js";
 
 
 
@@ -26,11 +27,18 @@ let currentViewQuat = new THREE.Quaternion(); // tracks what is displayed
 
 let lastFocusEl = null;
 
-let viewMode = "strength"; // "strength" | "supports"
+let viewMode = "strength"; // "strength" | "supports" | "overhang"
 let rankedCandidatesStrength = [];
 let rankedCandidatesSupports = [];
 let currentCandidateIndex = 0;
 let orientationRecommendations = [];
+let overhangColorBuffer = null;
+let overhangHeatmapMode = "angle";
+let supportShadowsEnabled = false;
+let supportShadowOverlay = null;
+
+const VIEW_MODES = ["strength", "supports", "overhang"];
+const DEFAULT_VIEW_COLOR = 0x8ef0ff;
 
 
 function openHelp() {
@@ -123,7 +131,7 @@ function getViewerQuaternion(zUpQuat) {
 }
 
 function getCurrentAnalysisQuaternion() {
-  return viewMode === "supports" ? bestQuatSupports : bestQuatStrength;
+  return viewMode === "strength" ? bestQuatStrength : bestQuatSupports;
 }
 
 function getLoadAxisSelectorValue() {
@@ -182,7 +190,36 @@ function getExportMode() {
 }
 
 function getActiveRankedCandidates() {
-  return viewMode === "supports" ? rankedCandidatesSupports : rankedCandidatesStrength;
+  return viewMode === "strength" ? rankedCandidatesStrength : rankedCandidatesSupports;
+}
+
+function getViewModeLabel(mode = viewMode) {
+  switch (mode) {
+    case "supports":
+      return "Supports";
+    case "overhang":
+      return "Overhang";
+    case "strength":
+    default:
+      return "Strength";
+  }
+}
+
+function updateViewModeButton() {
+  const btn = document.getElementById("toggleViewBtn");
+  if (btn) btn.textContent = `View: ${getViewModeLabel()}`;
+}
+
+function updateHeatmapMetricUI() {
+  const group = document.getElementById("overhangMetricGroup");
+  const select = document.getElementById("overhangMetric");
+  const shadowToggle = document.getElementById("supportShadowsToggle");
+
+  if (group) group.hidden = viewMode !== "overhang";
+  if (select && select.value !== overhangHeatmapMode) {
+    select.value = overhangHeatmapMode;
+  }
+  if (shadowToggle) shadowToggle.checked = supportShadowsEnabled;
 }
 
 function formatCandidateScore(item) {
@@ -388,6 +425,92 @@ function renderOrientationRecommendations(result) {
   }
 }
 
+function refreshViewMeshColors() {
+  if (!viewMesh || !lastAnalysisData) return;
+
+  const material = viewMesh.material;
+  if (!(material instanceof THREE.MeshStandardMaterial)) return;
+
+  if (viewMode !== "overhang") {
+    material.vertexColors = false;
+    material.color.setHex(DEFAULT_VIEW_COLOR);
+    material.needsUpdate = true;
+    return;
+  }
+
+  const zUpQuat = getCurrentViewExportQuaternion();
+  if (!zUpQuat) return;
+
+  overhangColorBuffer = buildOverhangVertexColors(
+    lastAnalysisData.triangles,
+    zUpQuat,
+    {
+      mode: overhangHeatmapMode,
+      bbox: lastAnalysisData.bbox,
+    },
+    overhangColorBuffer
+  );
+
+  let colorAttr = viewMesh.geometry.getAttribute("color");
+  if (!colorAttr || colorAttr.array.length !== overhangColorBuffer.length) {
+    colorAttr = new THREE.BufferAttribute(overhangColorBuffer, 3);
+    viewMesh.geometry.setAttribute("color", colorAttr);
+  } else {
+    colorAttr.array.set(overhangColorBuffer);
+    colorAttr.needsUpdate = true;
+  }
+
+  material.vertexColors = true;
+  material.color.setHex(0xffffff);
+  material.needsUpdate = true;
+}
+
+function refreshSupportShadowOverlay() {
+  if (supportShadowOverlay) {
+    supportShadowOverlay.visible = viewMode === "overhang" && supportShadowsEnabled;
+  }
+
+  if (!viewMesh || !lastAnalysisData || viewMode !== "overhang" || !supportShadowsEnabled) {
+    return;
+  }
+
+  const zUpQuat = getCurrentViewExportQuaternion();
+  if (!zUpQuat) return;
+
+  const { positions, colors } = buildSupportShadowSegments(lastAnalysisData.triangles, zUpQuat, {
+    mode: overhangHeatmapMode,
+    bbox: lastAnalysisData.bbox,
+    severityThreshold: 0.22,
+    maxSegments: 600,
+  });
+
+  if (!supportShadowOverlay) {
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+    geometry.setAttribute("color", new THREE.BufferAttribute(colors, 3));
+
+    const material = new THREE.LineBasicMaterial({
+      vertexColors: true,
+      transparent: true,
+      opacity: 0.34,
+      depthTest: false,
+      depthWrite: false,
+    });
+
+    supportShadowOverlay = new THREE.LineSegments(geometry, material);
+    supportShadowOverlay.quaternion.copy(qZupToYup);
+    supportShadowOverlay.renderOrder = 4;
+    scene.add(supportShadowOverlay);
+    return;
+  }
+
+  supportShadowOverlay.geometry.dispose();
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+  geometry.setAttribute("color", new THREE.BufferAttribute(colors, 3));
+  supportShadowOverlay.geometry = geometry;
+}
+
 function runOrientationAnalysis() {
   if (!lastAnalysisData) {
     resetOrientationPanel("Load an STL to analyze orientation.");
@@ -400,10 +523,6 @@ function runOrientationAnalysis() {
 
 
 const toggleViewBtn = document.getElementById("toggleViewBtn");
-
-toggleViewBtn?.addEventListener("click", () => {
-  console.log("toggleViewBtn clicked");
-});
 
 
 
@@ -448,6 +567,8 @@ function reflowViewMesh() {
   const loadAxis = getLoadAxisFromUI(lastAnalysisData);
   const loadWorld = loadAxis.clone().applyQuaternion(currentViewQuat).normalize();
   updateLoadArrow(loadWorld, viewMesh);
+  refreshViewMeshColors();
+  refreshSupportShadowOverlay();
 }
 
 function rotateView(axis, radians) {
@@ -611,18 +732,28 @@ function exportSTL() {
 
 
 document.getElementById("toggleViewBtn")?.addEventListener("click", () => {
+  const modeIndex = VIEW_MODES.indexOf(viewMode);
+  viewMode = VIEW_MODES[(modeIndex + 1) % VIEW_MODES.length];
+  updateViewModeButton();
+  updateHeatmapMetricUI();
+
   if (!viewMesh) return;
 
-  viewMode = viewMode === "strength" ? "supports" : "strength";
+  if (viewMode === "overhang") {
+    refreshViewMeshColors();
+    refreshSupportShadowOverlay();
+    updateCandidateUI();
+    return;
+  }
 
-  const btn = document.getElementById("toggleViewBtn");
-  if (btn) btn.textContent = `View: ${viewMode === "strength" ? "Strength" : "Supports"}`;
-
+  refreshSupportShadowOverlay();
   showCandidate(0);
 });
 
 ensureManualRotateUI();
 updateCandidateUI();
+updateViewModeButton();
+updateHeatmapMetricUI();
 resetOrientationPanel("Load an STL to analyze orientation.");
 
 document.getElementById("rotXPlus").onclick = () => rotateView([1, 0, 0],  getRotateStepRadians());
@@ -648,6 +779,17 @@ document.getElementById("candidateNextBtn")?.addEventListener("click", () => {
 });
 
 document.getElementById("analyzeOrientationBtn")?.addEventListener("click", runOrientationAnalysis);
+document.getElementById("overhangMetric")?.addEventListener("change", (event) => {
+  overhangHeatmapMode = event.target.value;
+  if (viewMode === "overhang") {
+    refreshViewMeshColors();
+    refreshSupportShadowOverlay();
+  }
+});
+document.getElementById("supportShadowsToggle")?.addEventListener("change", (event) => {
+  supportShadowsEnabled = event.target.checked;
+  refreshSupportShadowOverlay();
+});
 
 
 // ---------------------------------------- EXPORT BUTTON ------------------------------
@@ -780,6 +922,7 @@ document.getElementById("fileInput").addEventListener("change", (event) => {
 // ---------------------- LOAD AND ANALYZE STL ----------------------
 function loadSTL(buffer) {
   lastSTLBuffer = buffer;
+  overhangColorBuffer = null;
 
   // Parse STL
   const parsed = loader.parse(buffer);
@@ -844,8 +987,15 @@ function loadSTL(buffer) {
     viewMesh = null;
   }
 
+  if (supportShadowOverlay) {
+    scene.remove(supportShadowOverlay);
+    supportShadowOverlay.geometry.dispose();
+    supportShadowOverlay.material.dispose();
+    supportShadowOverlay = null;
+  }
+
   const material = new THREE.MeshStandardMaterial({
-    color: 0x8ef0ff,
+    color: DEFAULT_VIEW_COLOR,
     metalness: 0.1,
     roughness: 0.35,
   });
@@ -864,8 +1014,8 @@ function loadSTL(buffer) {
   // ---- Default view mode on load ----
   // Always start in Strength view unless you explicitly change it elsewhere.
   viewMode = "strength";
-const btn = document.getElementById("toggleViewBtn");
-if (btn) btn.textContent = "View: Strength";
+  updateViewModeButton();
+  updateHeatmapMetricUI();
 
 
 
@@ -900,10 +1050,14 @@ function clearBuildplate() {
   bestQuatStrength = null;
   bestQuatSupports = null;
   hasManualViewRotation = false;
+  overhangColorBuffer = null;
   rankedCandidatesStrength = [];
   rankedCandidatesSupports = [];
   currentCandidateIndex = 0;
+  viewMode = "strength";
   updateCandidateUI();
+  updateViewModeButton();
+  updateHeatmapMetricUI();
   resetOrientationPanel("Load an STL to analyze orientation.");
 
   // Clear inspector HUD

@@ -467,6 +467,18 @@
     <div class="group">
       <button id="toggleViewBtn" class="btn ghost">View: Strength</button>
 
+      <div id="overhangMetricGroup" class="heatmapControl" hidden>
+        <label class="miniLabel" for="overhangMetric">Heatmap Metric</label>
+        <select id="overhangMetric" class="select">
+          <option value="angle" selected>Angle</option>
+          <option value="angle-distance">Angle × Distance</option>
+        </select>
+        <label class="heatmapToggle" for="supportShadowsToggle">
+          <input id="supportShadowsToggle" type="checkbox" />
+          <span>Support Shadows</span>
+        </label>
+      </div>
+
       <div class="candidate-browser">
         <button id="candidatePrevBtn" class="btn ghost" type="button">Prev</button>
         <span id="candidateIndexLabel" class="miniLabel">Cand -/-</span>
