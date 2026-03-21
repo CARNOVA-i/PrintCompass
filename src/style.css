@@ -372,6 +372,13 @@ select option{
   margin-bottom:8px;
 }
 
+.orientationNote{
+  font-size:12px;
+  line-height:1.4;
+  color: rgba(230,240,255,.74);
+  margin-bottom:8px;
+}
+
 .orientationApply{
   width:100%;
 }

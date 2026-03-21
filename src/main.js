@@ -6,6 +6,7 @@ import { preprocessGeometry } from "./analyze/preprocess.js";
 import { buildCandidates } from "./analyze/candidates.js";
 import { scoreOverhang } from "./analyze/scoreOverhang.js";
 import { scoreStrength } from "./analyze/scoreStrength.js";
+import { scoreStructuralRisk } from "./analyze/scoreStructuralRisk.js";
 import { STLExporter } from "three/examples/jsm/exporters/STLExporter.js";
 import { computeInspectorReport } from "./analyze/inspector.js";
 import { analyzeOrientationRecommendations } from "./analyze/orientationRecommendations.js";
@@ -39,6 +40,18 @@ let supportShadowOverlay = null;
 
 const VIEW_MODES = ["strength", "supports", "overhang"];
 const DEFAULT_VIEW_COLOR = 0x8ef0ff;
+
+function getCandidateRankingMode(mode = viewMode) {
+  return mode === "strength" ? "strength" : "supports";
+}
+
+function isSupportVisualizationMode(mode = viewMode) {
+  return mode === "supports" || mode === "overhang";
+}
+
+function usesOverhangHeatmap(mode = viewMode) {
+  return mode === "overhang";
+}
 
 
 function openHelp() {
@@ -131,7 +144,7 @@ function getViewerQuaternion(zUpQuat) {
 }
 
 function getCurrentAnalysisQuaternion() {
-  return viewMode === "strength" ? bestQuatStrength : bestQuatSupports;
+  return getCandidateRankingMode() === "strength" ? bestQuatStrength : bestQuatSupports;
 }
 
 function getLoadAxisSelectorValue() {
@@ -143,6 +156,29 @@ function getLoadAxisSelectorValue() {
     document.querySelector("[name='loadAxis']");
 
   return el?.value ?? "principal";
+}
+
+function getLoadTypeSelectorValue() {
+  const el =
+    document.getElementById("loadTypeSelect") ||
+    document.getElementById("loadType") ||
+    document.querySelector("[name='loadType']");
+
+  return el?.value ?? "compression";
+}
+
+function normalizeLoadTypeSelection(value) {
+  switch ((value ?? "").trim().toLowerCase()) {
+    case "bending":
+      return "bending";
+    case "shear":
+      return "shear";
+    case "tension":
+      return "tension";
+    case "compression":
+    default:
+      return "compression";
+  }
 }
 
 function normalizeAxisSelection(value) {
@@ -191,7 +227,7 @@ function getExportMode() {
 }
 
 function getActiveRankedCandidates() {
-  return viewMode === "strength" ? rankedCandidatesStrength : rankedCandidatesSupports;
+  return getCandidateRankingMode() === "strength" ? rankedCandidatesStrength : rankedCandidatesSupports;
 }
 
 function getViewModeLabel(mode = viewMode) {
@@ -216,7 +252,7 @@ function updateHeatmapMetricUI() {
   const select = document.getElementById("overhangMetric");
   const shadowToggle = document.getElementById("supportShadowsToggle");
 
-  if (group) group.hidden = viewMode !== "overhang";
+  if (group) group.hidden = !isSupportVisualizationMode();
   if (select && select.value !== overhangHeatmapMode) {
     select.value = overhangHeatmapMode;
   }
@@ -244,8 +280,8 @@ function updateCandidateUI() {
   
   if (scoreLabel) {
     scoreLabel.textContent = cand
-      ? `STR ${cand.strengthScore?.toFixed(1)} | SUP ${cand.supportsScore?.toFixed(0)}`
-      : "STR - | SUP -";
+      ? `STR ${cand.strengthScore?.toFixed(1)} | SUPV ${cand.supportsScore?.toFixed(0)}`
+      : "STR - | SUPV -";
   }
 
   if (prevBtn) prevBtn.disabled = list.length === 0 || currentCandidateIndex <= 0;
@@ -265,9 +301,12 @@ function showCandidate(index) {
   updateCandidateUI();
 }
 
-function rebuildRankedCandidates(strengthScores, supportsScores) {
+function rebuildRankedCandidates(candidateAnalyses, strengthScores, supportsScores) {
   const strengthByIdx = new Map(strengthScores.map((item) => [item.idx, item.score]));
   const supportsByIdx = new Map(supportsScores.map((item) => [item.idx, item.score]));
+  const structuralRiskByIdx = new Map(
+    candidateAnalyses.map((item) => [item.idx, item.structuralRisk])
+  );
 
   const buildRankedList = (sorted) =>
     sorted.slice(0, 5).map((item, rank) => ({
@@ -275,6 +314,7 @@ function rebuildRankedCandidates(strengthScores, supportsScores) {
       quaternion: item.quat?.clone?.() || null,
       strengthScore: strengthByIdx.get(item.idx),
       supportsScore: supportsByIdx.get(item.idx),
+      structuralRisk: structuralRiskByIdx.get(item.idx) ?? null,
     }));
 
   rankedCandidatesStrength = buildRankedList(strengthScores);
@@ -403,6 +443,18 @@ function renderOrientationRecommendations(result) {
   results.innerHTML = "";
 
   for (const recommendation of result.recommendations) {
+    const metricLine = recommendation.structuralRisk
+      ? `
+        <span>Risk ${recommendation.metrics.structuralRiskPercent}%</span>
+        <span>${recommendation.structuralRisk.label}</span>
+        <span>Type ${recommendation.structuralRisk.loadType}</span>
+      `
+      : `
+        <span>SUPV ${Math.round(recommendation.metrics.supportVolume ?? 0)}</span>
+        <span>Stability ${formatPercent(recommendation.metrics.bedStability)}</span>
+        <span>Height ${recommendation.metrics.printHeight.toFixed(1)}</span>
+      `;
+
     const card = document.createElement("div");
     card.className = "orientationCard";
     card.innerHTML = `
@@ -411,10 +463,9 @@ function renderOrientationRecommendations(result) {
         <div class="orientationAngles">X ${recommendation.xDeg}° / Y ${recommendation.yDeg}°</div>
       </div>
       <div class="orientationMetrics">
-        <span>Support ${formatPercent(recommendation.normalized.supportNeed, true)}</span>
-        <span>Stability ${formatPercent(recommendation.metrics.bedStability)}</span>
-        <span>Height ${recommendation.metrics.printHeight.toFixed(1)}</span>
+        ${metricLine}
       </div>
+      ${recommendation.explanation ? `<div class="orientationNote">${recommendation.explanation}</div>` : ""}
       <button class="btn orientationApply" type="button">Apply</button>
     `;
 
@@ -432,7 +483,7 @@ function refreshViewMeshColors() {
   const material = viewMesh.material;
   if (!(material instanceof THREE.MeshStandardMaterial)) return;
 
-  if (viewMode !== "overhang") {
+  if (!usesOverhangHeatmap()) {
     material.vertexColors = false;
     material.color.setHex(DEFAULT_VIEW_COLOR);
     material.needsUpdate = true;
@@ -442,9 +493,11 @@ function refreshViewMeshColors() {
   const zUpQuat = getCurrentViewExportQuaternion();
   if (!zUpQuat) return;
 
+  const rotMatrix = new THREE.Matrix4().makeRotationFromQuaternion(zUpQuat);
+
   overhangColorBuffer = buildOverhangVertexColors(
     lastAnalysisData.triangles,
-    zUpQuat,
+    rotMatrix,
     {
       mode: overhangHeatmapMode,
       bbox: lastAnalysisData.bbox,
@@ -467,18 +520,23 @@ function refreshViewMeshColors() {
 }
 
 function refreshSupportShadowOverlay() {
-  if (supportShadowOverlay) {
-    supportShadowOverlay.visible = viewMode === "overhang" && supportShadowsEnabled;
+  if (!viewMesh || !lastAnalysisData || !isSupportVisualizationMode() || !supportShadowsEnabled) {
+    if (supportShadowOverlay) {
+      supportShadowOverlay.visible = false;
+    }
+    return;
   }
 
-  if (!viewMesh || !lastAnalysisData || viewMode !== "overhang" || !supportShadowsEnabled) {
-    return;
+  if (supportShadowOverlay) {
+    supportShadowOverlay.visible = true;
   }
 
   const zUpQuat = getCurrentViewExportQuaternion();
   if (!zUpQuat) return;
 
-  const { positions, colors } = buildSupportShadowSegments(lastAnalysisData.triangles, zUpQuat, {
+  const rotMatrix = new THREE.Matrix4().makeRotationFromQuaternion(zUpQuat);
+
+  const { positions, colors } = buildSupportShadowSegments(lastAnalysisData.triangles, rotMatrix, {
     mode: overhangHeatmapMode,
     bbox: lastAnalysisData.bbox,
     severityThreshold: 0.22,
@@ -512,13 +570,39 @@ function refreshSupportShadowOverlay() {
   supportShadowOverlay.geometry = geometry;
 }
 
+
+function estimateSupportVolumeForQuaternion(analysisData, quat, options = {}) {
+  if (!analysisData || !quat) return 0;
+
+  const rotMatrix = new THREE.Matrix4().makeRotationFromQuaternion(quat);
+
+  const { totalVolume } = buildSupportShadowSegments(
+    analysisData.triangles,
+    rotMatrix,
+    {
+      mode: options.mode ?? "angle-distance",
+      bbox: analysisData.bbox,
+      severityThreshold: options.severityThreshold ?? 0.22,
+      maxSegments: options.maxSegments ?? 600,
+    }
+  );
+
+  return totalVolume ?? 0;
+}
+
+
+
 function runOrientationAnalysis() {
   if (!lastAnalysisData) {
     resetOrientationPanel("Load an STL to analyze orientation.");
     return;
   }
 
-  const result = analyzeOrientationRecommendations(lastAnalysisData, { stepDegrees: 45 });
+  const result = analyzeOrientationRecommendations(lastAnalysisData, {
+    stepDegrees: 45,
+    loadAxis: getLoadAxisFromUI(lastAnalysisData),
+    loadType: normalizeLoadTypeSelection(getLoadTypeSelectorValue()),
+  });
   renderOrientationRecommendations(result);
 }
 
@@ -733,22 +817,23 @@ function exportSTL() {
 
 
 document.getElementById("toggleViewBtn")?.addEventListener("click", () => {
+  const previousCandidateMode = getCandidateRankingMode();
   const modeIndex = VIEW_MODES.indexOf(viewMode);
   viewMode = VIEW_MODES[(modeIndex + 1) % VIEW_MODES.length];
+  const nextCandidateMode = getCandidateRankingMode();
   updateViewModeButton();
   updateHeatmapMetricUI();
 
   if (!viewMesh) return;
 
-  if (viewMode === "overhang") {
-    refreshViewMeshColors();
-    refreshSupportShadowOverlay();
-    updateCandidateUI();
+  if (previousCandidateMode !== nextCandidateMode) {
+    showCandidate(0);
     return;
   }
 
+  refreshViewMeshColors();
   refreshSupportShadowOverlay();
-  showCandidate(0);
+  updateCandidateUI();
 });
 
 ensureManualRotateUI();
@@ -782,15 +867,16 @@ document.getElementById("candidateNextBtn")?.addEventListener("click", () => {
 document.getElementById("analyzeOrientationBtn")?.addEventListener("click", runOrientationAnalysis);
 document.getElementById("overhangMetric")?.addEventListener("change", (event) => {
   overhangHeatmapMode = event.target.value;
-  if (viewMode === "overhang") {
-    refreshViewMeshColors();
-    refreshSupportShadowOverlay();
-  }
+  if (!isSupportVisualizationMode()) return;
+  refreshViewMeshColors();
+  refreshSupportShadowOverlay();
 });
 document.getElementById("supportShadowsToggle")?.addEventListener("change", (event) => {
   supportShadowsEnabled = event.target.checked;
   refreshSupportShadowOverlay();
 });
+document.getElementById("loadAxisSelect")?.addEventListener("change", refreshAnalysisForLoadInputs);
+document.getElementById("loadTypeSelect")?.addEventListener("change", refreshAnalysisForLoadInputs);
 
 
 // ---------------------------------------- EXPORT BUTTON ------------------------------
@@ -996,13 +1082,74 @@ function loadSTL(buffer) {
 
   // Load axis from UI
   const loadAxis = getLoadAxisFromUI(analysisData);
+  const loadType = normalizeLoadTypeSelection(getLoadTypeSelectorValue());
   console.log("Load axis:", loadAxis.toArray());
+  console.log("Load type:", loadType);
+
+  const candidateAnalyses = candidates.map((candidate, idx) => {
+    const strengthScore = scoreStrength(
+      analysisData,
+      candidate.matrix,
+      candidate.quaternion,
+      loadAxis
+    );
+
+    const overhangScore = scoreOverhang(
+      analysisData.triangles,
+      candidate.matrix,
+      candidate.quaternion
+    );
+
+    const supportVolume = estimateSupportVolumeForQuaternion(
+      analysisData,
+      candidate.quaternion,
+      {
+        mode: overhangHeatmapMode,
+        severityThreshold: 0.22,
+        maxSegments: 600,
+      }
+    );
+
+    const structuralRisk = scoreStructuralRisk(
+      analysisData,
+      candidate.matrix,
+      candidate.quaternion,
+      loadAxis,
+      loadType
+    );
+
+    return {
+      idx,
+      quat: candidate.quaternion,
+      strengthScore,
+      overhangScore,
+      supportVolume,
+      supportsScore: supportVolume,
+      structuralRisk,
+    };
+  });
+
+  analysisData.candidateAnalyses = candidateAnalyses.map((item) => ({
+    idx: item.idx,
+    quaternion: item.quat.clone(),
+    strengthScore: item.strengthScore,
+    overhangScore: item.overhangScore,
+    supportVolume: item.supportVolume,
+    supportsScore: item.supportsScore,
+    structuralRisk: {
+      normalizedScore: item.structuralRisk.normalizedScore,
+      label: item.structuralRisk.label,
+      loadType: item.structuralRisk.loadType,
+      breakdown: { ...item.structuralRisk.breakdown },
+    },
+  }));
 
   // Strength pass
-  const strengthScores = candidates.map((c, idx) => {
-    const s = scoreStrength(analysisData, c.matrix, c.quaternion, loadAxis);
-    return { idx, score: s, quat: c.quaternion };
-  });
+  const strengthScores = candidateAnalyses.map((item) => ({
+    idx: item.idx,
+    score: item.strengthScore,
+    quat: item.quat,
+  }));
   strengthScores.sort((a, b) => a.score - b.score);
   bestQuatStrength = strengthScores[0].quat.clone();
 
@@ -1010,16 +1157,28 @@ function loadSTL(buffer) {
   console.table(strengthScores.slice(0, 5));
 
   // Supports pass
-  const supportsScores = candidates.map((c, idx) => {
-    const s = scoreOverhang(analysisData.triangles, c.matrix, c.quaternion);
-    return { idx, score: s, quat: c.quaternion };
-  });
+  const supportsScores = candidateAnalyses.map((item) => ({
+    idx: item.idx,
+    score: item.supportsScore,
+    quat: item.quat,
+  }));
   supportsScores.sort((a, b) => a.score - b.score);
   bestQuatSupports = supportsScores[0].quat.clone();
-  rebuildRankedCandidates(strengthScores, supportsScores);
+  rebuildRankedCandidates(candidateAnalyses, strengthScores, supportsScores);
 
-  console.log("Best supports/overhang scores (lower is better):");
+  console.log("Best support-volume scores (lower is better):");
   console.table(supportsScores.slice(0, 5));
+  console.log("Lowest structural-risk scores (lower is better):");
+  console.table(
+    [...candidateAnalyses]
+      .sort((a, b) => a.structuralRisk.normalizedScore - b.structuralRisk.normalizedScore)
+      .slice(0, 5)
+      .map((item) => ({
+        idx: item.idx,
+        score: item.structuralRisk.normalizedScore.toFixed(3),
+        label: item.structuralRisk.label,
+      }))
+  );
   console.log("bestQuatStrength", bestQuatStrength.toArray());
   console.log("bestQuatSupports", bestQuatSupports.toArray());
   console.log("dot similarity", Math.abs(bestQuatStrength.dot(bestQuatSupports)));
@@ -1155,4 +1314,8 @@ document.getElementById("fileInput")?.addEventListener("change", (e) => {
 // AUTO SHOW HELP ON FIRST VISIT
 if (!localStorage.getItem("pc_help_seen_v1")) {
   openHelp();
+}
+
+function refreshAnalysisForLoadInputs() {
+  if (lastSTLBuffer) loadSTL(lastSTLBuffer);
 }

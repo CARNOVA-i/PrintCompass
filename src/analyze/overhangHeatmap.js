@@ -1,22 +1,28 @@
 import * as THREE from "three";
 
 const GRADIENT_STOPS = [
-  { t: 0.0, color: new THREE.Color(0x39d5ff) },
-  { t: 0.25, color: new THREE.Color(0x2f6fff) },
-  { t: 0.55, color: new THREE.Color(0xffd54a) },
-  { t: 0.78, color: new THREE.Color(0xff8a3d) },
+  { t: 0.0, color: new THREE.Color(0x8ef0ff) },
+  { t: 0.18, color: new THREE.Color(0x8ef0ff) },
+  { t: 0.40, color: new THREE.Color(0x2f6fff) },
+  { t: 0.68, color: new THREE.Color(0xffd54a) },
+  { t: 0.84, color: new THREE.Color(0xff8a3d) },
   { t: 1.0, color: new THREE.Color(0xff4d4d) },
 ];
+
+
 const EPSILON = 1e-6;
 const SHADOW_LOW = new THREE.Color(0xffad66);
 const SHADOW_HIGH = new THREE.Color(0xff5a5a);
+const TMP_A = new THREE.Vector3();
+const TMP_B = new THREE.Vector3();
+const TMP_C = new THREE.Vector3();
 
 function clamp01(value) {
   return Math.max(0, Math.min(1, value));
 }
 
-export function getRotatedBounds(bbox, zUpQuat) {
-  const matrix = new THREE.Matrix4().makeRotationFromQuaternion(zUpQuat);
+export function getRotatedBounds(bbox, rotMatrix) {
+  const matrix = rotMatrix;
   const corners = [
     new THREE.Vector3(bbox.min.x, bbox.min.y, bbox.min.z),
     new THREE.Vector3(bbox.min.x, bbox.min.y, bbox.max.z),
@@ -75,14 +81,21 @@ function getGradientColor(severity, target) {
   return target.copy(GRADIENT_STOPS[GRADIENT_STOPS.length - 1].color);
 }
 
-function computeTriangleSeverity(triangle, zUpQuat, mode, bounds, rotatedNormal, rotatedCentroid) {
-  rotatedNormal.copy(triangle.normal).applyQuaternion(zUpQuat).normalize();
+function computeTriangleSeverity(triangle, rotMatrix, mode, bounds, rotatedNormal, rotatedCentroid) {
+  rotatedNormal.copy(triangle.normal).transformDirection(rotMatrix);
+
   rotatedCentroid
     .copy(triangle.a)
     .add(triangle.b)
     .add(triangle.c)
     .multiplyScalar(1 / 3)
-    .applyQuaternion(zUpQuat);
+    .applyMatrix4(rotMatrix);
+
+  const minVertexZ = Math.min(
+    TMP_A.copy(triangle.a).applyMatrix4(rotMatrix).z,
+    TMP_B.copy(triangle.b).applyMatrix4(rotMatrix).z,
+    TMP_C.copy(triangle.c).applyMatrix4(rotMatrix).z
+  );
 
   const downwardSeverity = Math.max(0, -rotatedNormal.z);
   const normalizedDistance = bounds
@@ -92,7 +105,6 @@ function computeTriangleSeverity(triangle, zUpQuat, mode, bounds, rotatedNormal,
   let severity = downwardSeverity ** 2;
 
   if (mode === "angle-distance" && bounds) {
-    // Preserve a baseline response near the bed while emphasizing tall unsupported regions.
     severity *= 0.35 + (0.65 * Math.pow(normalizedDistance, 0.75));
   }
 
@@ -101,10 +113,11 @@ function computeTriangleSeverity(triangle, zUpQuat, mode, bounds, rotatedNormal,
     downwardSeverity,
     normalizedDistance,
     centroid: rotatedCentroid,
+    minVertexZ,
   };
 }
 
-export function buildOverhangVertexColors(triangles, zUpQuat, options = {}, targetArray = null) {
+export function buildOverhangVertexColors(triangles, rotMatrix, options = {}, targetArray = null) {
   const colors = targetArray && targetArray.length === triangles.length * 9
     ? targetArray
     : new Float32Array(triangles.length * 9);
@@ -113,13 +126,13 @@ export function buildOverhangVertexColors(triangles, zUpQuat, options = {}, targ
   const rotatedNormal = new THREE.Vector3();
   const rotatedCentroid = new THREE.Vector3();
   const color = new THREE.Color();
-  const bounds = bbox ? getRotatedBounds(bbox, zUpQuat) : null;
+  const bounds = bbox ? getRotatedBounds(bbox, rotMatrix) : null;
 
   for (let i = 0; i < triangles.length; i++) {
     const triangle = triangles[i];
     const { severity } = computeTriangleSeverity(
       triangle,
-      zUpQuat,
+      rotMatrix,
       options.mode ?? "angle",
       bounds,
       rotatedNormal,
@@ -143,10 +156,10 @@ export function buildOverhangVertexColors(triangles, zUpQuat, options = {}, targ
   return colors;
 }
 
-export function buildSupportShadowSegments(triangles, zUpQuat, options = {}) {
+export function buildSupportShadowSegments(triangles, rotMatrix, options = {}) {
   const bbox = options.bbox ?? null;
   const mode = options.mode ?? "angle";
-  const bounds = bbox ? getRotatedBounds(bbox, zUpQuat) : null;
+  const bounds = bbox ? getRotatedBounds(bbox, rotMatrix) : null;
   if (!bounds) return { positions: new Float32Array(0), colors: new Float32Array(0) };
 
   const rotatedNormal = new THREE.Vector3();
@@ -155,26 +168,29 @@ export function buildSupportShadowSegments(triangles, zUpQuat, options = {}) {
 
   const maxSpan = Math.max(bounds.width, bounds.depth, EPSILON);
   const cellSize = Math.max(maxSpan * 0.03, bounds.height * 0.02, 1e-3);
+  const cellArea = cellSize * cellSize;
   const minHeight = Math.max(bounds.height * 0.03, 1e-4);
   const threshold = options.severityThreshold ?? 0.22;
   const maxSegments = options.maxSegments ?? 600;
-  const tx = -((bounds.minX + bounds.maxX) * 0.5);
-  const ty = -((bounds.minY + bounds.maxY) * 0.5);
-  const tz = -bounds.minZ;
+  
+  
 
   const cells = new Map();
+
+  let totalVolume = 0;
 
   for (const triangle of triangles) {
     const result = computeTriangleSeverity(
       triangle,
-      zUpQuat,
+      rotMatrix,
       mode,
       bounds,
       rotatedNormal,
       rotatedCentroid
     );
 
-    const supportHeight = Math.max(0, result.centroid.z - bounds.minZ);
+    const blendedZ = (0.65 * result.minVertexZ) + (0.35 * result.centroid.z);
+    const supportHeight = Math.max(0, blendedZ - bounds.minZ);
     if (result.severity < threshold || supportHeight < minHeight || result.downwardSeverity <= 0.35) {
       continue;
     }
@@ -204,11 +220,13 @@ export function buildSupportShadowSegments(triangles, zUpQuat, options = {}) {
   for (let i = 0; i < segments.length; i++) {
     const segment = segments[i];
     const offset = i * 6;
-    const x = segment.x + tx;
-    const y = segment.y + ty;
-    const z0 = bounds.minZ + tz;
-    const z1 = bounds.minZ + segment.height + tz;
+    const x = segment.x;
+    const y = segment.y;
+    const z0 = 0;
+    const z1 = segment.height;
     const intensity = clamp01(0.25 + (0.75 * segment.severity));
+    const alpha = clamp01(segment.height / bounds.height);
+    totalVolume += segment.height * cellArea;
 
     color.copy(SHADOW_LOW).lerp(SHADOW_HIGH, intensity);
 
@@ -227,5 +245,5 @@ export function buildSupportShadowSegments(triangles, zUpQuat, options = {}) {
     colors[offset + 5] = color.b;
   }
 
-  return { positions, colors };
+  return { positions, colors, totalVolume };
 }

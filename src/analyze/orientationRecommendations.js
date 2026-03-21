@@ -1,5 +1,7 @@
 import * as THREE from "three";
 import { scoreOverhang } from "./scoreOverhang.js";
+import { scoreStructuralRisk } from "./scoreStructuralRisk.js";
+import { buildSupportShadowSegments } from "./overhangHeatmap.js";
 
 const WORLD_UP = new THREE.Vector3(0, 0, 1);
 const EPSILON = 1e-6;
@@ -82,7 +84,16 @@ function computeBottomContactArea(triangles, rotMatrix, minZ, height) {
 function createCandidateMetrics(analysisData, candidate) {
   const extents = rotatedExtents(analysisData.bbox, candidate.matrix);
   const footprint = Math.max(EPSILON, extents.width * extents.depth);
-  const supportNeed = scoreOverhang(analysisData.triangles, candidate.matrix) / Math.max(analysisData.totalArea, EPSILON);
+  const { totalVolume: supportVolume = 0 } = buildSupportShadowSegments(
+    analysisData.triangles,
+    candidate.matrix,
+    {
+      mode: "angle-distance",
+      bbox: analysisData.bbox,
+      severityThreshold: 0.22,
+      maxSegments: 600,
+    }
+  );
   const bottomContactArea = computeBottomContactArea(
     analysisData.triangles,
     candidate.matrix,
@@ -99,7 +110,7 @@ function createCandidateMetrics(analysisData, candidate) {
     quaternion: candidate.quaternion.clone(),
     matrix: candidate.matrix.clone(),
     metrics: {
-      supportNeed,
+      supportVolume,
       printHeight: extents.height,
       bedStability,
       footprint,
@@ -107,6 +118,47 @@ function createCandidateMetrics(analysisData, candidate) {
       slenderness,
     },
   };
+}
+
+function getRiskPercent(structuralRisk) {
+  return Math.round((1 - structuralRisk.normalizedScore) * 100);
+}
+
+function getPenaltyLabel(key) {
+  switch (key) {
+    case "loadAlignmentPenalty":
+      return "layer alignment";
+    case "slendernessPenalty":
+      return "slenderness";
+    case "leverArmPenalty":
+      return "lever arm";
+    case "weakNeckPenalty":
+      return "thin-section";
+    case "topMassPenalty":
+      return "top-heavy mass";
+    case "supportBurdenPenalty":
+      return "support burden";
+    default:
+      return "structural risk";
+  }
+}
+
+function buildStructuralRiskExplanation(structuralRisk) {
+  const dominant = Object.entries(structuralRisk.breakdown)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 2)
+    .filter(([, value]) => value > 0.08)
+    .map(([key]) => getPenaltyLabel(key));
+
+  if (!dominant.length) {
+    return `Lowest heuristic structural risk for the selected ${structuralRisk.loadType} load case.`;
+  }
+
+  if (dominant.length === 1) {
+    return `Lowest heuristic structural risk here by keeping ${dominant[0]} penalty down for the selected ${structuralRisk.loadType} load case.`;
+  }
+
+  return `Lowest heuristic structural risk here by reducing ${dominant[0]} and ${dominant[1]} penalties for the selected ${structuralRisk.loadType} load case.`;
 }
 
 function buildSampleCandidates(stepDegrees = 45) {
@@ -131,7 +183,7 @@ function buildSampleCandidates(stepDegrees = 45) {
 }
 
 function scoreCandidates(candidates) {
-  const supportValues = candidates.map((candidate) => candidate.metrics.supportNeed);
+  const supportValues = candidates.map((candidate) => candidate.metrics.supportVolume);
   const heightValues = candidates.map((candidate) => candidate.metrics.printHeight);
   const stabilityValues = candidates.map((candidate) => candidate.metrics.bedStability);
 
@@ -143,7 +195,7 @@ function scoreCandidates(candidates) {
   const stabilityMax = Math.max(...stabilityValues);
 
   return candidates.map((candidate) => {
-    const normalizedSupport = inverseLerp(supportMin, supportMax, candidate.metrics.supportNeed);
+    const normalizedSupport = inverseLerp(supportMin, supportMax, candidate.metrics.supportVolume);
     const normalizedHeight = inverseLerp(heightMin, heightMax, candidate.metrics.printHeight);
     const normalizedStability = inverseLerp(stabilityMin, stabilityMax, candidate.metrics.bedStability);
     const normalizedStabilityPenalty = 1 - normalizedStability;
@@ -156,7 +208,7 @@ function scoreCandidates(candidates) {
     return {
       ...candidate,
       normalized: {
-        supportNeed: normalizedSupport,
+        supportVolume: normalizedSupport,
         printHeight: normalizedHeight,
         stabilityPenalty: normalizedStabilityPenalty,
       },
@@ -196,10 +248,27 @@ function formatRecommendation(label, candidate) {
 
 export function analyzeOrientationRecommendations(analysisData, options = {}) {
   const stepDegrees = options.stepDegrees ?? 45;
+  const loadAxis = options.loadAxis ?? null;
+  const loadType = options.loadType ?? "compression";
   const sampledCandidates = buildSampleCandidates(stepDegrees).map((candidate) =>
     createCandidateMetrics(analysisData, candidate)
   );
-  const scoredCandidates = scoreCandidates(sampledCandidates);
+  const candidatesWithStructuralRisk = sampledCandidates.map((candidate) => {
+    const structuralRisk = scoreStructuralRisk(
+      analysisData,
+      candidate.matrix,
+      candidate.quaternion,
+      loadAxis,
+      loadType
+    );
+
+    return {
+      ...candidate,
+      structuralRisk,
+      explanation: buildStructuralRiskExplanation(structuralRisk),
+    };
+  });
+  const scoredCandidates = scoreCandidates(candidatesWithStructuralRisk);
 
   const usedKeys = new Set();
   const bestBalanced = pickRecommendation(
@@ -214,6 +283,10 @@ export function analyzeOrientationRecommendations(analysisData, options = {}) {
     [...scoredCandidates].sort((a, b) => a.scores.stability - b.scores.stability),
     usedKeys
   );
+  const lowestStructuralRisk = pickRecommendation(
+    [...scoredCandidates].sort((a, b) => a.structuralRisk.normalizedScore - b.structuralRisk.normalizedScore),
+    usedKeys
+  );
 
   return {
     stepDegrees,
@@ -222,6 +295,17 @@ export function analyzeOrientationRecommendations(analysisData, options = {}) {
       formatRecommendation("Best Balanced", bestBalanced),
       formatRecommendation("Lowest Support", lowestSupport),
       formatRecommendation("Best Stability", bestStability),
+      lowestStructuralRisk
+        ? {
+            ...formatRecommendation("Lowest Structural Risk", lowestStructuralRisk),
+            structuralRisk: lowestStructuralRisk.structuralRisk,
+            explanation: lowestStructuralRisk.explanation,
+            metrics: {
+              ...lowestStructuralRisk.metrics,
+              structuralRiskPercent: getRiskPercent(lowestStructuralRisk.structuralRisk),
+            },
+          }
+        : null,
     ].filter(Boolean),
   };
 }

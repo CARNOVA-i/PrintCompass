@@ -73,6 +73,17 @@
   flex-wrap:nowrap;
 }
 
+.loadControlGroup{
+  display:flex;
+  align-items:center;
+  gap:8px;
+  padding:2px 6px;
+  border-radius:10px;
+  background:rgba(255,255,255,0.02);
+  border:1px solid rgba(142,240,255,0.10);
+  flex-wrap:nowrap;
+}
+
 /* hide divider nodes (we’ll do separators via borders if you want) */
 .toolbar > .divider{ display:none; }
 
@@ -494,7 +505,7 @@
       <button id="toggleViewBtn" class="btn ghost">View: Strength</button>
 
       <div id="overhangMetricGroup" class="heatmapControl" hidden>
-        <label class="miniLabel" for="overhangMetric">Heatmap Metric</label>
+        <label class="miniLabel" for="overhangMetric">Support Metric</label>
         <select id="overhangMetric" class="select">
           <option value="angle" selected>Angle</option>
           <option value="angle-distance">Angle × Distance</option>
@@ -508,17 +519,26 @@
       <div class="candidate-browser">
         <button id="candidatePrevBtn" class="btn ghost" type="button">Prev</button>
         <span id="candidateIndexLabel" class="miniLabel">Cand -/-</span>
-        <span id="candidateScoreLabel" class="miniLabel">STR - | SUP -</span>
+        <span id="candidateScoreLabel" class="miniLabel">STR - | SUPV -</span>
         <button id="candidateNextBtn" class="btn ghost" type="button">Next</button>
       </div>
 
-      <label class="miniLabel">Load</label>
-      <select id="loadAxisSelect" class="select">
-        <option value="pca" selected>Principal Axis (auto)</option>
-        <option value="x">X</option>
-        <option value="y">Y</option>
-        <option value="z">Z</option>
-      </select>
+      <div class="loadControlGroup">
+        <label class="miniLabel" for="loadAxisSelect">Load</label>
+        <select id="loadAxisSelect" class="select">
+          <option value="pca" selected>Principal Axis (auto)</option>
+          <option value="x">X</option>
+          <option value="y">Y</option>
+          <option value="z">Z</option>
+        </select>
+        <label class="miniLabel" for="loadTypeSelect">Type</label>
+        <select id="loadTypeSelect" class="select">
+          <option value="compression" selected>Compression</option>
+          <option value="bending">Bending</option>
+          <option value="shear">Shear</option>
+          <option value="tension">Tension</option>
+        </select>
+      </div>
 
       <button id="helpBtn" class="btn icon" title="What am I seeing?">?</button>
     </div>
